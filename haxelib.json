@@ -1,0 +1,13 @@
+{
+  "name": "hx-nx-runtime",
+  "url": "https://github.com/Slushi-Github/HxNXRuntime",
+  "license": "MIT",
+  "tags": ["haxe", "hxcpp", "libhxcpp", "nintendo", "switch", "nx", "runtime"],
+  "description": "Nintendo Switch runtime support for libhxcpp, adding compiling Haxe/C++ to the Nintendo Switch.",
+  "version": "0.1.0",
+  "releasenote": "",
+  "contributors": ["Slushi"],
+  "dependencies": {
+    "libhxcpp": ""
+  }
+}

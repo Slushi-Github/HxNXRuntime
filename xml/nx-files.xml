@@ -1,0 +1,50 @@
+<xml>
+   <!--
+      Runtime source overrides. Reopening a group adds/updates entries, and
+      filterout removes the original one when "nx" is defined. This runs after
+      every Build.xml include.
+   -->
+
+   <echo value="Replacing runtime sources for Nintendo Switch"/>
+
+   <files id="runtime">
+      <file name="src/hx/Date.cpp" filterout="nx"/>
+      <file name="${NX_LIB_DIR}/cpp/NXDate.cpp" if="nx"/>
+      <file name="${NX_LIB_DIR}/cpp/nx/NXCrash.cpp" if="nx"/>
+      <file name="${NX_LIB_DIR}/cpp/nx/NXScreen.cpp" if="nx"/>
+      <file name="${NX_LIB_DIR}/cpp/nx/NXAppletMode.cpp" if="nx"/>
+      <file name="${NX_LIB_DIR}/cpp/nx/NXPerformance.cpp" if="nx"/>
+      <file name="${NX_LIB_DIR}/cpp/nx/NXSocketRuntime.cpp" if="nx"/>
+      <file name="${NX_LIB_DIR}/cpp/nx/NXThreads.cpp" if="nx"/>
+
+      <!-- libhxcpp would otherwise pick CountingSemaphore.unsupported.cpp,
+            whose acquire()/release() throw "Unsupported platform". newlib and
+            libnx provide POSIX semaphores through libsysbase, so swap only the
+            semaphore implementation and keep the rest of hxcpp's thread file
+            list. The POSIX file may already be present (the toolchain defines
+            "linux"); the group is a map, so the entry is replaced, not added
+            twice. -->
+      <file name="src/hx/thread/CountingSemaphore.unsupported.cpp" filterout="nx"/>
+      <file name="src/hx/thread/CountingSemaphore.posix.cpp" if="nx"/>
+   </files>
+
+   <files id="hxcpp_std">
+      <file name="File.cpp" filterout="nx"/>
+      <file name="Sys.cpp" filterout="nx"/>
+      <file name="Process.cpp" filterout="nx"/>
+      <file name="Socket.cpp" filterout="nx"/>
+      <file name="${NX_LIB_DIR}/cpp/std/NXFile.cpp" if="nx"/>
+      <file name="${NX_LIB_DIR}/cpp/std/NXSys.cpp" if="nx"/>
+      <file name="${NX_LIB_DIR}/cpp/std/NXProcess.cpp" if="nx"/>
+      <file name="${NX_LIB_DIR}/cpp/std/NXSocket.cpp" if="nx"/>
+   </files>
+
+   <files id="hxcpp_ssl">
+      <!-- ssl/Build.xml uses ${this_dir}/SSL.cpp; HXCPP may or may not end in a
+            slash, so cover both spellings of the same absolute path. -->
+      <file name="${HXCPP}/src/hx/libs/ssl/SSL.cpp" filterout="nx"/>
+      <file name="${HXCPP}src/hx/libs/ssl/SSL.cpp" filterout="nx"/>
+      <file name="${NX_LIB_DIR}/cpp/ssl/NXSSL.cpp" if="nx"/>
+      <file name="${NX_LIB_DIR}/cpp/ssl/NXSSLWrapper.cpp" if="nx"/>
+   </files>
+</xml>

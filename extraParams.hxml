@@ -1,0 +1,7 @@
+--macro nx.Preflight.init()
+-D nx
+-D toolchain=nx
+-D BINDIR=Switch
+-D static_link
+--macro nx.CrashDefines.init()
+--macro nx.Build.init()

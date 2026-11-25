@@ -1,0 +1,160 @@
+<xml>
+   <!--
+      Nintendo Switch toolchain, loaded as toolchain/nx-toolchain.xml.
+      Replaces the Switch edits that used to live in libhxcpp's linux-toolchain.xml.
+   -->
+
+   <echo value="Using toolchain for Nintendo Switch"/>
+
+   <set name="NX_LIB_DIR" value="${haxelib:hx-nx-runtime}" />
+   <set name="BINDIR" value="Switch" />
+   <set name="linux" value="1" />
+
+   <path name="${DEVKITPRO}/devkitA64/bin/" />
+   <path name="${DEVKITPRO}/tools/bin/" />
+
+   <set name="CXX" value="aarch64-none-elf-g++" />
+   <set name="HXCPP_STRIP" value="aarch64-none-elf-strip" />
+   <set name="HXCPP_AR" value="aarch64-none-elf-ar" />
+   <set name="HXCPP_RANLIB" value="aarch64-none-elf-ranlib" />
+
+   <include name="toolchain/gcc-toolchain.xml"/>
+
+   <set name="noM32" value="1" />
+   <set name="noM64" value="1" />
+
+   <compiler id="linux" exe="aarch64-none-elf-g++" if="linux">
+      <exe name="${CXX}" if="CXX" />
+      <flag value="-c"/>
+      <flag value="-flto" if="HXCPP_OPTIMIZE_LINK" unless="debug"/>
+      <flag value="-fprofile-generate=${HXCPP_PGO_DIR}" if="HXCPP_PGO_GENERATE"/>
+      <flag value="-fprofile-update=atomic" if="HXCPP_PGO_GENERATE HXCPP_PGO_GCC"/>
+      <flag value="-fprofile-use=${HXCPP_PGO_DIR}" if="HXCPP_PGO_USE HXCPP_PGO_GCC"/>
+      <flag value="-fprofile-partial-training" if="HXCPP_PGO_USE HXCPP_PGO_GCC"/>
+      <flag value="-Wno-missing-profile" if="HXCPP_PGO_USE HXCPP_PGO_GCC"/>
+      <flag value="-Wno-coverage-mismatch" if="HXCPP_PGO_USE HXCPP_PGO_GCC"/>
+      <flag value="-fprofile-use=${HXCPP_PGO_DIR}/default.profdata" if="HXCPP_PGO_USE HXCPP_PGO_CLANG"/>
+      <flag value="-Wno-profile-instr-unprofiled" if="HXCPP_PGO_USE HXCPP_PGO_CLANG"/>
+      <flag value="-Wno-profile-instr-out-of-date" if="HXCPP_PGO_USE HXCPP_PGO_CLANG"/>
+      <flag value="-fvisibility=hidden"/>
+      <cppflag value="-frtti"/>
+      <flag value="-g" if="HXCPP_DEBUG_LINK"/>
+      <flag value="-O2" unless="debug"/>
+
+      <!-- Implement the native crash handler. 
+         Defining -D HXCPP_NX_NO_CRASH_HANDLER turns all of it off, but NXCrash.cpp
+            still compiles, but its functions do nothing. -->
+      <flag value="-DHXCPP_NX_NO_CRASH_HANDLER" if="HXCPP_NX_NO_CRASH_HANDLER"/>
+      <flag value="-DHXCPP_CHECK_POINTER" unless="HXCPP_NX_NO_CRASH_HANDLER"/>
+      <flag value="-DHXCPP_STACK_TRACE" unless="HXCPP_NX_NO_CRASH_HANDLER"/>
+      <flag value="-DHXCPP_STACK_LINE" unless="HXCPP_NX_NO_CRASH_HANDLER"/>
+
+      <!-- Nintendo Switch defines -->
+      <flag value='-march=armv8-a+crc+crypto' />
+      <flag value='-mtp=soft' />
+      <flag value='-mtune=cortex-a57' />
+      <flag value='-fPIE' />
+      <flag value='-Wall' />
+      <flag value='-D__SWITCH__' />
+      <flag value='-D__NX__' />
+      <flag value='-D__TM_GMTOFF=tm_gmtoff'/>
+      <flag value='-D__POSIX_VISIBLE'/>
+      <flag value='-D__BSD_VISIBLE'/>
+      <flag value='-DSQLITE_OMIT_LOAD_EXTENSION'/>
+      <flag value='-DMBEDTLS_PLATFORM_IS_UNIXLIKE'/>
+      <flag value='-DMBEDTLS_NO_PLATFORM_ENTROPY'/>
+      <flag value='-DMBEDTLS_ENTROPY_HARDWARE_ALT'/>
+      <flag value='-DMBEDTLS_PLATFORM_MS_TIME_ALT'/>
+      <flag value='-DMBEDTLS_PLATFORM_TIME_ALT'/>
+      <flag value="-DHX_NX"/>
+      <flag value="-DHXCPP_NO_DYNAMIC_LOADING"/>
+      <flag value="-DHXCPP_HX_NX_SYS_EXTRA" if="HXCPP_HX_NX_SYS_EXTRA"/>
+      <flag value="-DHXCPP_NX_NO_OVERCLOCK" if="HXCPP_NX_NO_OVERCLOCK"/>
+      <flag value='-ffunction-sections' />
+      <flag value='-fexceptions' />
+      <flag value='-fpermissive' />
+      <flag value='-static' />
+      <flag value="-I${DEVKITPRO}/libnx/include"/>
+      <flag value="-I${NX_LIB_DIR}/cpp/nx"/>
+
+      <!-- Same mechanism HXCPP uses for __hxcpp_*: the declarations are
+            visible in every generated .cpp, so untyped __global__.nx_perf_*()
+            works on every Haxe file. The implementation is always
+            compiled and checks HXCPP_NX_NO_OVERCLOCK itself. -->
+      <flag value="-include" if="nx"/>
+      <flag value="${NX_LIB_DIR}/cpp/nx/NXPerformance.h" if="nx"/>
+
+      <!-- Socket lifecycle (init before main, socketExit on exit). The anchor
+            in this header also keeps NXSocketRuntime.cpp in the link even when
+            no Haxe code references it. -->
+      <flag value="-include" if="nx"/>
+      <flag value="${NX_LIB_DIR}/cpp/nx/NXSocketRuntime.h" if="nx"/>
+
+      <!-- Thread runtime fixes (pthread_detach hook). The anchor in this
+            header keeps NXThreads.cpp in the link even though libsysbase's
+            reference is weak. -->
+      <flag value="-include" if="nx"/>
+      <flag value="${NX_LIB_DIR}/cpp/nx/NXThreads.h" if="nx"/>
+      <flag value="-I${NX_LIB_DIR}/cpp/std_stubs"/>
+      <flag value="-I${HXCPP}/src/hx"/>
+      <flag value="-I${HXCPP}/src/hx/libs/std"/>
+      <flag value="-I${HXCPP}/src/hx/libs/ssl"/>
+
+      <flag value="-Wno-overflow" />
+      <cppflag value="-Wno-invalid-offsetof" />
+      <flag value="-fsanitize=${HXCPP_SANITIZE}" if="HXCPP_SANITIZE"/>
+      <flag value="-fno-omit-frame-pointer" if="HXCPP_SANITIZE"/>
+      <flag value="-DHX_LINUX"/>
+      <flag value="-DRASPBERRYPI=RASPBERRYPI" if="rpi"/>
+      <flag value="-DHXCPP_BIG_ENDIAN" if="HXCPP_BIG_ENDIAN"/>
+      <include name="toolchain/common-defines.xml" />
+
+      <flag value="-I${HXCPP}/include"/>
+      <objdir value="obj/linux${OBJEXT}/"/>
+      <outflag value="-o"/>
+      <ext value=".o"/>
+   </compiler>
+
+   <linker id="dll" exe="aarch64-none-elf-g++" if="linux">
+      <exe name="${CXX}" if="CXX" />
+      <fromfile value="" if="GCC_OLD" />
+      <flag value="-shared"/>
+      <flag value="-flto" if="HXCPP_OPTIMIZE_LINK" unless="debug"/>
+      <flag value="-fprofile-generate=${HXCPP_PGO_DIR}" if="HXCPP_PGO_GENERATE"/>
+      <flag value="-fprofile-use=${HXCPP_PGO_DIR}" if="HXCPP_PGO_USE HXCPP_PGO_GCC"/>
+      <flag value="-fprofile-partial-training" if="HXCPP_PGO_USE HXCPP_PGO_GCC"/>
+      <flag value="-Xlinker"/>
+      <flag value="--no-undefined" unless="HXCPP_ALLOW_UNDEFINED" />
+      <flag value="-debug" if="HXCPP_DEBUG_LINK" />
+      <flag value="-fsanitize=${HXCPP_SANITIZE}" if="HXCPP_SANITIZE"/>
+      <ext value=".dso"/>
+      <outflag value="-o "/>
+   </linker>
+
+   <linker id="exe" exe="aarch64-none-elf-g++" if="linux">
+      <exe name="${CXX}" if="CXX" />
+      <fromfile value="" if="GCC_OLD" />
+      <flag value="-debug" if="HXCPP_DEBUG_LINK" />
+      <flag value="-flto" if="HXCPP_OPTIMIZE_LINK" unless="debug"/>
+      <flag value="-fprofile-generate=${HXCPP_PGO_DIR}" if="HXCPP_PGO_GENERATE"/>
+      <flag value="-fprofile-use=${HXCPP_PGO_DIR}" if="HXCPP_PGO_USE HXCPP_PGO_GCC"/>
+      <flag value="-fprofile-partial-training" if="HXCPP_PGO_USE HXCPP_PGO_GCC"/>
+      <flag value="-fsanitize=${HXCPP_SANITIZE}" if="HXCPP_SANITIZE"/>
+      
+      <!-- The NX runtime and the optional performance bindings call libnx.
+            hx_libnx also adds this, and a duplicated -lnx is harmless. -->
+      <lib name="-lnx" if="nx"/>
+      <ext value=""/>
+      <outflag value="-o "/>
+   </linker>
+
+   <!--
+      Make sure the std/socket/file sources are part of the build even when the
+      application does not reference cpp.Native* directly. If the application
+      already pulled them in, its <pragma once> keeps this a no-op.
+   -->
+   <include name="${HXCPP}/src/hx/libs/std/Build.xml"/>
+
+   <!-- Group overrides: parsed after Build.xml, before group.filter(defines). -->
+   <include name="${NX_LIB_DIR}/xml/nx-files.xml"/>
+</xml>
