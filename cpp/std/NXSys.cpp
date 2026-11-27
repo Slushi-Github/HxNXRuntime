@@ -308,6 +308,16 @@ bool _hx_std_set_cwd( String d )
    if (input.empty())
       return false;
 
+   // OpenFL's SharedObject.__mkdir switches to the device root with
+   // "sdmc:\" (backslash). Normalize separators before deciding whether the
+   // path is absolute, otherwise "sdmc:\" is treated as a relative name and
+   // the chdir fails, leaving directory creation relative to the wrong cwd.
+   for (size_t i = 0; i < input.size(); ++i)
+   {
+      if (input[i] == '\\')
+         input[i] = '/';
+   }
+
    std::string current;
    {
       std::lock_guard<std::mutex> lock(nxCwdMutex());
@@ -375,6 +385,12 @@ String _hx_std_file_full_path( String path )
    std::string input(rawPtr ? rawPtr : "");
    if (input.empty())
       return null();
+
+   for (size_t i = 0; i < input.size(); ++i)
+   {
+      if (input[i] == '\\')
+         input[i] = '/';
+   }
 
    std::string current;
    {

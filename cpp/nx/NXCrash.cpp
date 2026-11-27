@@ -24,7 +24,7 @@
 #include <hx/Debug.h>
 #include <hx/StackContext.h>
 
-#define NX_CRASH_VERSION "1.0.0"
+#define NX_CRASH_VERSION "1.1.0"
 #define NX_CRASH_TITLE "HxNXRuntime -- Crash Handler v" NX_CRASH_VERSION
 #define NX_CRASH_RULE "================================================"
 
@@ -38,6 +38,10 @@
 #define NX_CRASH_LINE_MAX 128
 #define NX_CRASH_SCREEN_LINES 12
 #define NX_CRASH_DEFAULT_DIR "sdmc:/switch/HxNXRuntime/nativeCrashes"
+#define NX_CRASH_THREAD_NAME_MAX 24
+#define NX_CRASH_THREAD_SLOTS 16
+#define NX_CRASH_PREV_MAX 10
+#define NX_CRASH_PREV_READ 65536
 
 /*
  * How long the crash screen waits for a button before exiting on its own. 
@@ -47,8 +51,8 @@
 #define NX_CRASH_HOLD_SECONDS ((NX_CRASH_HOLD_ITERATIONS * NX_CRASH_HOLD_MS) / 1000)
 
 /**
- * Folder where a file is written automatically on crash. Empty means "ask on
- * the crash screen" (MINUS writes to NX_CRASH_DEFAULT_DIR). 
+ * Folder where a file is written automatically on crash. Empty means nothing
+ * is written automatically and MINUS writes to NX_CRASH_DEFAULT_DIR. 
  */
 static char s_dir[NX_CRASH_DIR_MAX] = "";
 
@@ -56,6 +60,12 @@ static char s_dir[NX_CRASH_DIR_MAX] = "";
  * File of the current report. Empty until it is written. 
  */
 static char s_path[NX_CRASH_PATH_MAX] = "";
+
+/**
+ * Message shown on the crash screen when MINUS could not write the report,
+ * so the button never looks like it did nothing.
+ */
+static char s_saveError[NX_CRASH_LINE_MAX] = "";
 
 /**
  * Program name shown on the crash screen. Defaults to "Haxe program". 
@@ -100,6 +110,31 @@ static bool s_haxeAvailable = false;
 static void *s_nativeFrames[NX_CRASH_LINES];
 static int s_nativeCount = 0;
 
+/**
+ * Thread that is reporting the crash. A fault in Horizon never reaches us, but
+ * abort(), std::terminate() and nxCrashReport() can run on any worker thread,
+ * and then the report has to say which one it was.
+ */
+static Thread *s_mainThread = NULL;
+static u64 s_mainThreadId = 0;
+
+static u64 s_reportThreadId = 0;
+static bool s_reportThreadIsMain = true;
+static void *s_reportThreadTls = NULL;
+static void *s_reportThreadSp = NULL;
+static void *s_reportThreadStack = NULL;
+static size_t s_reportThreadStackSize = 0;
+static const char *s_reportThreadName = NULL;
+
+/** Optional per-thread labels set with nxCrashSetThreadName(), ring buffer. */
+static struct
+{
+	u64 id;
+	char name[NX_CRASH_THREAD_NAME_MAX];
+} s_threadNames[NX_CRASH_THREAD_SLOTS];
+
+static int s_threadNameNext = 0;
+
 /** 
  * The application's own shutdown (OpenAL, romfs, nxlink socket...), so a crash
  * cleans up the same things a clean exit does. 
@@ -142,6 +177,148 @@ static void nxCrashCaptureNative (void)
 	s_nativeCount = frames.count;
 }
 
+/* Current stack pointer, to tell how deep the reporting thread was. */
+static void *nxCrashReadSp (void)
+{
+	void *sp;
+	__asm__ volatile ("mov %0, sp" : "=r" (sp));
+	return sp;
+}
+
+static u64 nxCrashCurrentThreadId (void)
+{
+	u64 id = 0;
+	Handle handle = threadGetCurHandle ();
+
+	if (handle != 0 && R_SUCCEEDED (svcGetThreadId (&id, handle)))
+	{
+		return id;
+	}
+
+	return 0;
+}
+
+static const char *nxCrashThreadNameLookup (u64 id)
+{
+	if (id == 0)
+	{
+		return NULL;
+	}
+
+	for (int i = 0; i < NX_CRASH_THREAD_SLOTS; i++)
+	{
+		if (s_threadNames[i].id == id)
+		{
+			return s_threadNames[i].name;
+		}
+	}
+
+	return NULL;
+}
+
+/**
+ * Records which thread is reporting, its TLS, its stack pointer and, when
+ * libnx knows the thread, the stack region it was given. Called from the
+ * crashing thread, so only TLS reads and one syscall are used.
+ */
+static void nxCrashCaptureThread (void)
+{
+	Thread *self = threadGetSelf ();
+	u64 id = 0;
+
+	s_reportThreadTls = armGetTls ();
+	s_reportThreadSp = nxCrashReadSp ();
+	s_reportThreadStack = NULL;
+	s_reportThreadStackSize = 0;
+
+	if (self != NULL)
+	{
+		s_reportThreadStack = self->stack_mem;
+		s_reportThreadStackSize = self->stack_sz;
+
+		if (self->handle != 0 && R_SUCCEEDED (svcGetThreadId (&id, self->handle)))
+		{
+			s_reportThreadId = id;
+		}
+	}
+	else
+	{
+		s_reportThreadId = nxCrashCurrentThreadId ();
+	}
+
+	s_reportThreadIsMain = (self != NULL && self == s_mainThread)
+		|| (s_reportThreadId != 0 && s_reportThreadId == s_mainThreadId);
+	s_reportThreadName = nxCrashThreadNameLookup (s_reportThreadId);
+}
+
+/**
+ * "main", "worker", plus the label and id when known. Kept short enough for
+ * the 80 column crash screen.
+ */
+static void nxCrashThreadLabel (char *out, size_t size)
+{
+	const char *kind = s_reportThreadIsMain ? "main" : "worker";
+
+	if (s_reportThreadName != NULL)
+	{
+		if (s_reportThreadId != 0)
+		{
+			snprintf (out, size, "%s \"%s\" (id 0x%llx)", kind, s_reportThreadName, (unsigned long long) s_reportThreadId);
+		}
+		else
+		{
+			snprintf (out, size, "%s \"%s\"", kind, s_reportThreadName);
+		}
+	}
+	else if (s_reportThreadId != 0)
+	{
+		snprintf (out, size, "%s (id 0x%llx)", kind, (unsigned long long) s_reportThreadId);
+	}
+	else
+	{
+		snprintf (out, size, "%s", kind);
+	}
+}
+
+/**
+ * Writes the reporting thread block to the log: which thread, where its TLS
+ * lives, and how much of its stack was in use.
+ */
+static void nxCrashWriteThread (FILE *out)
+{
+	char label[NX_CRASH_LINE_MAX];
+
+	nxCrashThreadLabel (label, sizeof label);
+	fprintf (out, "Thread: %s\n", label);
+
+	if (s_reportThreadTls != NULL)
+	{
+		fprintf (out, "  TLS: %p\n", s_reportThreadTls);
+	}
+
+	if (s_reportThreadSp != NULL)
+	{
+		fprintf (out, "  SP: %p\n", s_reportThreadSp);
+	}
+
+	if (s_reportThreadStack != NULL && s_reportThreadStackSize > 0)
+	{
+		uintptr_t base = (uintptr_t) s_reportThreadStack;
+		uintptr_t top = base + s_reportThreadStackSize;
+		uintptr_t sp = (uintptr_t) s_reportThreadSp;
+
+		fprintf (out, "  Stack: %p-%p (size 0x%llx", s_reportThreadStack, (void *) top,
+			(unsigned long long) s_reportThreadStackSize);
+
+		if (sp >= base && sp <= top)
+		{
+			fprintf (out, ", used 0x%llx", (unsigned long long) (top - sp));
+		}
+
+		fprintf (out, ")\n");
+	}
+}
+
 /**
  * The Haxe stack is the useful one: it names the real program code. hxcpp only has it
  * when compiled with HXCPP_STACK_TRACE (nx/CrashDefines.hx adds it from
@@ -175,15 +352,17 @@ static void nxCrashCaptureHaxe (void)
 }
 
 /**
- * Writes the report to the given path. 
+ * Writes the report to the given path. Returns false when the file could not
+ * be opened, so the caller can report it on the screen instead of silently
+ * pretending the log was saved.
  */
-static void nxCrashWriteLog (const char *path)
+static bool nxCrashWriteLog (const char *path)
 {
 	FILE *out = fopen (path, "w");
 
 	if (out == NULL)
 	{
-		return;
+		return false;
 	}
 
 	fprintf (out, "%s\n", NX_CRASH_TITLE);
@@ -204,6 +383,7 @@ static void nxCrashWriteLog (const char *path)
 	}
 
 	fprintf (out, "Phase: %s\n", s_phase);
+	nxCrashWriteThread (out);
 	fprintf (out, "Kind: %s\n", s_kind);
 
 	if (s_reason[0] != '\0')
@@ -242,6 +422,8 @@ static void nxCrashWriteLog (const char *path)
 
 	fflush (out);
 	fclose (out);
+
+	return true;
 }
 
 /* 
@@ -281,7 +463,11 @@ static void nxCrashScreenLog (const char *message)
 }
 
 /**
- * Creates the crash directory if needed.
+ * Creates the crash directory and any missing parent, like `mkdir -p`.
+ * `mkdir()` alone only creates the last component, so
+ * `sdmc:/switch/HxNXRuntime/nativeCrashes` failed whenever
+ * `sdmc:/switch/HxNXRuntime` did not exist yet, and MINUS silently did
+ * nothing. The drive prefix (`sdmc:`) is left alone.
  */
 static bool nxCrashEnsureDir (const char *dir)
 {
@@ -290,7 +476,22 @@ static bool nxCrashEnsureDir (const char *dir)
 		return false;
 	}
 
-	if (mkdir (dir, 0777) == 0)
+	char path[NX_CRASH_PATH_MAX];
+	snprintf (path, sizeof path, "%s", dir);
+
+	for (char *p = path + 1; *p != '\0'; p++)
+	{
+		if (*p != '/')
+		{
+			continue;
+		}
+
+		*p = '\0';
+		mkdir (path, 0777);
+		*p = '/';
+	}
+
+	if (mkdir (path, 0777) == 0)
 	{
 		fsdevCommitDevice ("sdmc");
 		return true;
@@ -298,7 +499,7 @@ static bool nxCrashEnsureDir (const char *dir)
 
 	struct stat info;
 
-	return stat (dir, &info) == 0 && S_ISDIR (info.st_mode);
+	return stat (path, &info) == 0 && S_ISDIR (info.st_mode);
 }
 
 /**
@@ -347,6 +548,7 @@ static void nxCrashBuildReport (const char *kind, const char *reason)
 	snprintf (s_kind, sizeof s_kind, "%s", kind != NULL ? kind : "fatal");
 	snprintf (s_reason, sizeof s_reason, "%s", reason != NULL ? reason : "");
 
+	nxCrashCaptureThread ();
 	nxCrashCaptureHaxe ();
 	nxCrashCaptureNative ();
 }
@@ -369,7 +571,11 @@ static void nxCrashSaveReport (void)
 		return;
 	}
 
-	nxCrashWriteLog (path);
+	if (!nxCrashWriteLog (path))
+	{
+		return;
+	}
+
 	snprintf (s_path, sizeof s_path, "%s", path);
 	fsdevCommitDevice ("sdmc");
 }
@@ -404,6 +610,10 @@ static void nxCrashBuildScreen (bool saved, const char *savedPath)
 	}
 
 	nxScreenAddLinef (NX_FG, "Phase: %s - Type: %s", s_phase, s_kind);
+
+	char threadLabel[NX_CRASH_LINE_MAX];
+	nxCrashThreadLabel (threadLabel, sizeof threadLabel);
+	nxScreenAddLinef (NX_DIM, "Thread: %s", threadLabel);
 
 	if (s_reason[0] != '\0')
 	{
@@ -460,6 +670,11 @@ static void nxCrashBuildScreen (bool saved, const char *savedPath)
 	else
 	{
 		nxScreenAddLinef (NX_WARN, "Press MINUS to save the log to %s", NX_CRASH_DEFAULT_DIR);
+	}
+
+	if (s_saveError[0] != '\0')
+	{
+		nxScreenAddLinef (NX_ACCENT, "%s", s_saveError);
 	}
 
 	nxScreenAddLine ("Press PLUS to return to hbmenu.", NX_FG);
@@ -555,19 +770,45 @@ static void nxCrashShowScreen (void)
 			padUpdate (&pad);
 			u64 down = padGetButtonsDown (&pad);
 
+			/* Only when nothing was written automatically. When the project
+			   passes a folder to nxCrashInstall(), the log already exists and
+			   MINUS must not create duplicates. */
 			if (!saved && (down & HidNpadButton_Minus) != 0)
 			{
-				char path[NX_CRASH_PATH_MAX];
+				char path[NX_CRASH_PATH_MAX] = "";
 
-				if (nxCrashBuildPath (NX_CRASH_DEFAULT_DIR, path, sizeof path))
+				s_saveError[0] = '\0';
+				nxCrashMarker ("MINUS pressed");
+
+				/* Preferred folder is the documented runtime one; fall back to
+				   the project folder when it cannot be created. */
+				if (!nxCrashBuildPath (NX_CRASH_DEFAULT_DIR, path, sizeof path)
+					&& (s_dir[0] == '\0' || !nxCrashBuildPath (s_dir, path, sizeof path)))
 				{
-					nxCrashWriteLog (path);
+					path[0] = '\0';
+				}
+
+				if (path[0] == '\0')
+				{
+					snprintf (s_saveError, sizeof s_saveError, "Could not create %s", NX_CRASH_DEFAULT_DIR);
+					nxCrashMarker ("save failed: no path");
+				}
+				else if (!nxCrashWriteLog (path))
+				{
+					snprintf (s_saveError, sizeof s_saveError, "Could not write %s", path);
+					nxCrashMarker ("save failed: %s", path);
+				}
+				else
+				{
 					snprintf (s_path, sizeof s_path, "%s", path);
 					snprintf (savedPath, sizeof savedPath, "%s", path);
 					fsdevCommitDevice ("sdmc");
 					saved = true;
-					nxCrashPresent (saved, savedPath);
+					nxCrashMarker ("saved to %s", path);
 				}
+
+				/* Repaint even on failure, so the press is always visible. */
+				nxCrashPresent (saved, savedPath);
 			}
 
 			if ((down & HidNpadButton_Plus) != 0)
@@ -753,6 +994,14 @@ void nxCrashInstall (const char *crashDir)
 
 	s_installed = true;
 
+	/* The auto-install constructor runs on the main thread, so this is the
+	   reference used later to tell main from worker threads. */
+	if (s_mainThreadId == 0)
+	{
+		s_mainThread = threadGetSelf ();
+		s_mainThreadId = nxCrashCurrentThreadId ();
+	}
+
 	nxScreenSetLogFn (nxCrashScreenLog);
 
 	std::set_terminate (nxCrashTerminate);
@@ -809,6 +1058,41 @@ void nxCrashSetPhase (const char *phase)
 	}
 
 	snprintf (s_phase, sizeof s_phase, "%s", phase);
+}
+
+/**
+ * Labels the calling thread, so a report from it says which one it was
+ * (e.g. "asset-loader"). Slots are reused in a ring: the oldest label is
+ * dropped when a new thread has no free one. Safe from any thread.
+ */
+void nxCrashSetThreadName (const char *name)
+{
+	if (name == NULL || name[0] == '\0')
+	{
+		return;
+	}
+
+	u64 id = nxCrashCurrentThreadId ();
+
+	if (id == 0)
+	{
+		return;
+	}
+
+	for (int i = 0; i < NX_CRASH_THREAD_SLOTS; i++)
+	{
+		if (s_threadNames[i].id == id)
+		{
+			snprintf (s_threadNames[i].name, sizeof s_threadNames[i].name, "%s", name);
+			return;
+		}
+	}
+
+	int slot = s_threadNameNext;
+	s_threadNameNext = (slot + 1) % NX_CRASH_THREAD_SLOTS;
+
+	snprintf (s_threadNames[slot].name, sizeof s_threadNames[slot].name, "%s", name);
+	s_threadNames[slot].id = id;
 }
 
 /** 
@@ -880,6 +1164,13 @@ void nxCrashAddAddon (const char *addon) { (void) addon; }
  * Sets the phase shown on the crash screen.
  */
 void nxCrashSetPhase (const char *phase) { (void) phase; }
+
+/**
+ * Labels the calling thread, so a report from it says which one it was
+ * (e.g. "asset-loader"). Slots are reused in a ring: the oldest label is
+ * dropped when a new thread has no free one. Safe from any thread.
+ */
+void nxCrashSetThreadName (const char *name) { (void) name; }
 
 /** 
  * Reports a crash with a custom reason.

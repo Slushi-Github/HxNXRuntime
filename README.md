@@ -217,13 +217,16 @@ crash screen and the folder that receives the logs and what addons are used.
 ```cpp
 nxCrashSetProgram("My Program");                   // default: "Haxe program"
 nxCrashAddAddon("HaxeNXCompiler");                 // repeatable, omitted when empty
-nxCrashInstall("sdmc:/switch/Game/nativeCrashes"); // folder, created if missing
+nxCrashInstall("sdmc:/switch/MyProgram/nativeCrashes"); // folder, created if missing
 ```
 
 Every crash gets it's own file, `crash_YYYYMMDD_HHMMSS.log` (with `_2`, `_3`...
 if two land in the same second), so reports are never mixed or overwritten.
 With `nxCrashInstall(NULL)` nothing is written automatically; the crash screen
-offers to save it under `sdmc:/switch/HxNXRuntime/nativeCrashes/` with the MINUS button.
+offers to save it under `sdmc:/switch/HxNXRuntime/nativeCrashes/` with the MINUS
+button. When a folder is passed, the report is written there at crash time and
+MINUS has nothing left to save (no duplicate files). PLUS returns to the
+homebrew menu (`_Exit(0)`).
 
 ## Applet-mode guard
 
