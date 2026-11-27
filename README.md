@@ -71,9 +71,11 @@ haxelib dev hx-nx-runtime /path/to/HxNXRuntime
 
 Nothing to add. The compiler injects `-lib hx-nx-runtime` automatically, so declaring it in `HxNXProject.xml` is optional (it is not duplicated).
 
-### With Lime-NX:
+### With ~~Lime-NX~~ Lime-Switch
 
-it's a TODO. It uses the old hxcpp-nx workflow.
+Lime-Switch is for now not published yet. 
+
+But the process is automatically injected and done with original Lime, more info when Lime-NX is published.
 
 ### With plain hxcpp / hxml
 
